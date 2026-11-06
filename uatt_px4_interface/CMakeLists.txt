@@ -10,6 +10,22 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 
+set(dependencies
+  rclcpp
+  px4_msgs
+) 
+
+add_executable(vehicle_status_monitor src/vehicle_status_monitor.cpp)
+ament_target_dependencies(vehicle_status_monitor ${dependencies})
+
+
+install(
+  TARGETS
+  vehicle_status_monitor
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
