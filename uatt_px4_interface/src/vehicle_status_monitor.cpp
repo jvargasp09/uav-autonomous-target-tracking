@@ -1,7 +1,8 @@
 /**
  * @file vehicle_status_monitor.cpp
  * @author Jorge Vargas
- * @brief Monitors the status of the vehicle
+ * @brief Logs PX4 vehicle status changes (arming, flight mode, failsafe, ...)
+ *        in human-readable form. Prints a full snapshot on the first message.
  * @date Nov 5, 2026
  * 
  * --------------------------------------------------------
@@ -97,6 +98,10 @@ namespace
         }
     }
 
+    // NOTE (PX4 v1.17): latest_arming_reason / latest_disarming_reason values >= 6
+    // do not match these VehicleStatus.msg constants. Commander assigns them from
+    // arm_disarm_reason_t (src/lib/events/enums.json), which has no SAFETY_BUTTON,
+    // so e.g. auto-disarm on landing is reported as 6 (SAFETY_BUTTON here).
     const char * armDisarmReasonToString(uint8_t reason)
     {
         using px4_msgs::msg::VehicleStatus;
@@ -148,13 +153,17 @@ class VehicleStatusMonitor : public rclcpp::Node
 {
 public: 
 
-    explicit VehicleStatusMonitor() : Node("vehicle_status_monitor")
+    VehicleStatusMonitor() : Node("vehicle_status_monitor")
     {
-
+        
+        // PX4 publishes through uXRCE-DDS with best-effort reliability. A subscriber with
+        // the default (reliable) QoS would be incompatible and receive nothing.
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
         
         subscription_ = create_subscription<px4_msgs::msg::VehicleStatus>(
+            // "_v1" is appended by PX4 because VehicleStatus is a versioned message
+            // (MESSAGE_VERSION = 1). Update it if PX4 bumps the message version.
             "/fmu/out/vehicle_status_v1", 
             qos, 
             std::bind(&VehicleStatusMonitor::onVehicleStatus, this, std::placeholders::_1)
@@ -199,6 +208,11 @@ private:
         
     }
 
+    /**
+     * @brief Logs "field: old -> new" only if the value changed.
+     * @param to_string Function used to render the values as text.
+     * @param level     Severity of the log entry.
+     */
     void logIfChanged(const char * field_name, uint8_t old_value, uint8_t new_value,
                   ToStringFn to_string, LogLevel level = LogLevel::Info)
     {
