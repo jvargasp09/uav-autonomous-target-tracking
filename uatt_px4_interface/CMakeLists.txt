@@ -18,10 +18,14 @@ set(dependencies
 add_executable(vehicle_status_monitor src/vehicle_status_monitor.cpp)
 ament_target_dependencies(vehicle_status_monitor ${dependencies})
 
+add_executable(offboard_control src/offboard_control.cpp)
+ament_target_dependencies(offboard_control ${dependencies})
+
 
 install(
   TARGETS
   vehicle_status_monitor
+  offboard_control
   DESTINATION lib/${PROJECT_NAME}
 )
 
