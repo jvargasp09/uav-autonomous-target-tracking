@@ -7,7 +7,8 @@
  *
  * --------------------------------------------------------
  * Subscription Topics:
- *  None
+ *  /fmu/out/vehicle_status_v1 - px4_msgs/msg/VehicleStatus
+ *  /fmu/out/vehicle_local_position_v1 - px4_msgs/msg/VehicleLocalPosition
  * --------------------------------------------------------
  * Publishing Topics:
  *  /fmu/in/offboard_control_mode - px4_msgs/msg/OffboardControlMode
@@ -19,12 +20,17 @@
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
 
 #include <limits>
+#include <optional>
 
 using px4_msgs::msg::OffboardControlMode;
 using px4_msgs::msg::TrajectorySetpoint;
 using px4_msgs::msg::VehicleCommand;
+using px4_msgs::msg::VehicleStatus;
+using px4_msgs::msg::VehicleLocalPosition;
 
 using namespace std::chrono_literals;
 
@@ -49,13 +55,25 @@ class OffboardControl : public rclcpp::Node
 public:
     OffboardControl() : Node("offboard_control")
     {
-        // PX4 subscribes to /fmu/in/* with best-effort reliability; a best-effort
-        // publisher is compatible and avoids useless retransmissions of stale setpoints.
+        // PX4's uXRCE-DDS bridge is best-effort in both directions (/fmu/in/* subscribers
+        // and /fmu/out/* publishers). SensorDataQoS is compatible with both and avoids
+        // retransmitting stale setpoints.
         auto qos = rclcpp::SensorDataQoS();
         
         offboard_control_mode_publisher_ = create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", qos);
         trajectory_setpoint_publisher_ = create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", qos);
         vehicle_command_publisher_ = create_publisher<VehicleCommand>("/fmu/in/vehicle_command", qos);
+
+        vehicle_status_subscription_ = create_subscription<VehicleStatus>(
+            "/fmu/out/vehicle_status_v1", 
+            qos, 
+            std::bind(&OffboardControl::vehicleStatusCallback, this, std::placeholders::_1)
+        );
+        vehicle_local_position_subscription_ = create_subscription<VehicleLocalPosition>(
+            "/fmu/out/vehicle_local_position_v1", 
+            qos, 
+            std::bind(&OffboardControl::localPositionCallback, this, std::placeholders::_1)
+        );
         
         // PX4 requires the offboard stream at > 2 Hz and exits offboard after
         // COM_OF_LOSS_T (1 s by default) without it. 10 Hz leaves a safe margin.
@@ -67,6 +85,18 @@ public:
     }
 
 private:
+
+    enum class MissionState
+    {
+        WaitingForSetpoints,   // Stream setpoints before requesting offboard
+        RequestingOffboard,    // Send DO_SET_MODE until PX4 confirms OFFBOARD
+        Arming,                // Send ARM until PX4 confirms ARMED
+        TakingOff,             // Climb to the takeoff altitude above the start position
+        FollowingWaypoints,    // Fly through the square waypoints
+        Landing,               // NAV_LAND sent; wait for PX4 to land and disarm
+        Done,                  // Mission completed; node idle
+        Aborted                // PX4 left OFFBOARD; stop commanding, PX4 has control
+    };
 
     void timerCallback()
     {
@@ -141,7 +171,16 @@ private:
         vehicle_cmd_msg.from_external = true;
 
         vehicle_command_publisher_->publish(vehicle_cmd_msg);
+    }
 
+    void vehicleStatusCallback(const VehicleStatus::UniquePtr msg)
+    {
+        vehicle_status_msg_ = *msg;
+    }
+
+    void localPositionCallback(const VehicleLocalPosition::UniquePtr msg)
+    {
+        vehicle_local_position_msg_ = *msg;
     }
 
     uint64_t timestampUs()
@@ -153,11 +192,19 @@ private:
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
     rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;    
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
+
+    rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_subscription_;
+    rclcpp::Subscription<VehicleLocalPosition>::SharedPtr vehicle_local_position_subscription_;
+
     rclcpp::TimerBase::SharedPtr timer_;
 
     int setpoint_cycles_ = 0;
     bool offboard_cmd_sent_ = false;
     bool arm_cmd_sent_ = false;
+
+    MissionState state_ = MissionState::WaitingForSetpoints;
+    std::optional<VehicleStatus> vehicle_status_msg_;
+    std::optional<VehicleLocalPosition> vehicle_local_position_msg_;
 };
 
 
