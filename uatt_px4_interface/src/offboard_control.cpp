@@ -95,10 +95,6 @@ public:
         // and /fmu/out/* publishers). SensorDataQoS is compatible with both and avoids
         // retransmitting stale setpoints.
         auto qos = rclcpp::SensorDataQoS();
-        
-        offboard_control_mode_publisher_ = create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", qos);
-        trajectory_setpoint_publisher_ = create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", qos);
-        vehicle_command_publisher_ = create_publisher<VehicleCommand>("/fmu/in/vehicle_command", qos);
 
         vehicle_status_subscription_ = create_subscription<VehicleStatus>(
             "/fmu/out/vehicle_status_v1", 
@@ -111,6 +107,10 @@ public:
             std::bind(&OffboardControl::localPositionCallback, this, std::placeholders::_1)
         );
         
+        offboard_control_mode_publisher_ = create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", qos);
+        trajectory_setpoint_publisher_ = create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", qos);
+        vehicle_command_publisher_ = create_publisher<VehicleCommand>("/fmu/in/vehicle_command", qos);        
+        
         // PX4 requires the offboard stream at > 2 Hz and exits offboard after
         // COM_OF_LOSS_T (1 s by default) without it. 10 Hz leaves a safe margin.
         timer_ = create_wall_timer(100ms,
@@ -121,6 +121,16 @@ public:
     }
 
 private:
+
+    void vehicleStatusCallback(const VehicleStatus::UniquePtr msg)
+    {
+        vehicle_status_msg_ = *msg;
+    }
+
+    void localPositionCallback(const VehicleLocalPosition::UniquePtr msg)
+    {
+        vehicle_local_position_msg_ = *msg;
+    }
 
     void timerCallback()
     {        
@@ -135,8 +145,11 @@ private:
         switch (state_)
         {
             case MissionState::WaitingForSetpoints:
-                if (state_cycles_ >= 10)
+                if (isReadyToStart())
                 {
+                    start_x_ = vehicle_local_position_msg_->x;
+                    start_y_ = vehicle_local_position_msg_->y;
+                    start_z_ = vehicle_local_position_msg_->z;
                     transitionTo(MissionState::RequestingOffboard);
                 }
                 break;
@@ -242,17 +255,7 @@ private:
                     missionStateToString(next));
         state_ = next;
         state_cycles_ = 0;
-    }
-
-    void vehicleStatusCallback(const VehicleStatus::UniquePtr msg)
-    {
-        vehicle_status_msg_ = *msg;
-    }
-
-    void localPositionCallback(const VehicleLocalPosition::UniquePtr msg)
-    {
-        vehicle_local_position_msg_ = *msg;
-    }
+    }    
 
     uint64_t timestampUs()
     {
@@ -260,12 +263,22 @@ private:
         return get_clock()->now().nanoseconds() / 1000;
     }
 
-    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
-    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;    
-    rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
+    bool isReadyToStart() const
+    {
+        return state_cycles_ >= 10 &&
+               vehicle_status_msg_.has_value() &&
+               vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_DISARMED &&
+               vehicle_local_position_msg_.has_value() && 
+               vehicle_local_position_msg_->xy_valid &&
+               vehicle_local_position_msg_->z_valid;
+    }
 
     rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_subscription_;
     rclcpp::Subscription<VehicleLocalPosition>::SharedPtr vehicle_local_position_subscription_;
+
+    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
+    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;    
+    rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;    
 
     rclcpp::TimerBase::SharedPtr timer_;
 
@@ -274,6 +287,10 @@ private:
     std::optional<VehicleLocalPosition> vehicle_local_position_msg_;
 
     int state_cycles_ = 0;
+
+    float start_x_ = 0.0f;
+    float start_y_ = 0.0f;
+    float start_z_ = 0.0f;
 };
 
 
