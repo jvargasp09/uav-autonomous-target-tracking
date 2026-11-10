@@ -47,6 +47,42 @@ namespace
     // Hardcoded for a single simulated vehicle; to be replaced by a ROS 2 parameter.
     constexpr uint8_t kVehicleSystemId = 1;
     constexpr uint8_t kAutopilotComponentId = 1;
+
+    enum class MissionState
+    {
+        WaitingForSetpoints,   // Stream setpoints before requesting offboard
+        RequestingOffboard,    // Send DO_SET_MODE until PX4 confirms OFFBOARD
+        Arming,                // Send ARM until PX4 confirms ARMED
+        TakingOff,             // Climb to the takeoff altitude above the start position
+        FollowingWaypoints,    // Fly through the square waypoints
+        Landing,               // NAV_LAND sent; wait for PX4 to land and disarm
+        Done,                  // Mission completed; node idle
+        Aborted                // PX4 left OFFBOARD; stop commanding, PX4 has control
+    };
+
+    const char * missionStateToString(MissionState state)
+    {
+        switch (state)
+        {
+            case MissionState::WaitingForSetpoints:
+                return "WaitingForSetpoints";
+            case MissionState::RequestingOffboard:
+                return "RequestingOffboard";
+            case MissionState::Arming:
+                return "Arming";
+            case MissionState::TakingOff:
+                return "TakingOff";
+            case MissionState::FollowingWaypoints:
+                return "FollowingWaypoints";
+            case MissionState::Landing:
+                return "Landing";
+            case MissionState::Done:
+                return "Done";
+            case MissionState::Aborted:
+                return "Aborted";
+        }
+        return "UNKNOWN";
+    }
 }
 
 
@@ -86,49 +122,62 @@ public:
 
 private:
 
-    enum class MissionState
-    {
-        WaitingForSetpoints,   // Stream setpoints before requesting offboard
-        RequestingOffboard,    // Send DO_SET_MODE until PX4 confirms OFFBOARD
-        Arming,                // Send ARM until PX4 confirms ARMED
-        TakingOff,             // Climb to the takeoff altitude above the start position
-        FollowingWaypoints,    // Fly through the square waypoints
-        Landing,               // NAV_LAND sent; wait for PX4 to land and disarm
-        Done,                  // Mission completed; node idle
-        Aborted                // PX4 left OFFBOARD; stop commanding, PX4 has control
-    };
-
     void timerCallback()
     {        
         // One value is shared by both messages since they belong to the same control cycle.
         const uint64_t timestamp_us = timestampUs();    
         
+        // Temporary: fixed setpoint for every state until takeoff/waypoints are implemented.
         publishHeartbeat(timestamp_us);
         // NED frame: z points down, so -2.0 m means 2 m above the origin.
         publishPositionSetpoint(timestamp_us, 0.0f, 0.0f, -2.0f);
-        
-        // PX4 only accepts the switch to offboard if setpoints are already streaming,
-        // so wait ~1 s of setpoints before sending the mode and arm commands.
-        if (!offboard_cmd_sent_ || !arm_cmd_sent_) 
+
+        switch (state_)
         {
-            if (setpoint_cycles_ > 10)
-            {
-                if (!offboard_cmd_sent_)
+            case MissionState::WaitingForSetpoints:
+                if (state_cycles_ >= 10)
                 {
-                    publishVehicleCommand(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, kCustomModeEnabled, kPx4MainModeOffboard);
-                    offboard_cmd_sent_ = true;
+                    transitionTo(MissionState::RequestingOffboard);
                 }
-                else if (!arm_cmd_sent_)
+                break;
+
+            case MissionState::RequestingOffboard:
+                if (state_cycles_ % 10 == 0)
+                {                    
+                    publishVehicleCommand(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 
+                                          kCustomModeEnabled, 
+                                          kPx4MainModeOffboard);
+                }
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->nav_state == VehicleStatus::NAVIGATION_STATE_OFFBOARD)
                 {
-                    publishVehicleCommand(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, kArm);
-                    arm_cmd_sent_ = true;
+                    transitionTo(MissionState::Arming);
                 }
-            }
-            else 
-            {
-                setpoint_cycles_++;
-            }
+                break;
+
+            case MissionState::Arming:
+                if (state_cycles_ % 10 == 0)
+                {                    
+                    publishVehicleCommand(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 
+                                          kArm);
+                }
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_ARMED)
+                {
+                    transitionTo(MissionState::TakingOff);
+                }
+                break;
+
+            case MissionState::TakingOff:
+            case MissionState::FollowingWaypoints:
+            case MissionState::Landing:
+            case MissionState::Done:
+            case MissionState::Aborted:
+                // Not implemented yet.
+                break;
         }
+
+        state_cycles_++;
     }
 
     void publishHeartbeat(const uint64_t timestamp_us)
@@ -185,6 +234,16 @@ private:
         vehicle_command_publisher_->publish(vehicle_cmd_msg);
     }
 
+    void transitionTo(MissionState next)
+    {
+        RCLCPP_INFO(get_logger(),
+                    "State: %s -> %s", 
+                    missionStateToString(state_), 
+                    missionStateToString(next));
+        state_ = next;
+        state_cycles_ = 0;
+    }
+
     void vehicleStatusCallback(const VehicleStatus::UniquePtr msg)
     {
         vehicle_status_msg_ = *msg;
@@ -210,13 +269,11 @@ private:
 
     rclcpp::TimerBase::SharedPtr timer_;
 
-    int setpoint_cycles_ = 0;
-    bool offboard_cmd_sent_ = false;
-    bool arm_cmd_sent_ = false;
-
     MissionState state_ = MissionState::WaitingForSetpoints;
     std::optional<VehicleStatus> vehicle_status_msg_;
     std::optional<VehicleLocalPosition> vehicle_local_position_msg_;
+
+    int state_cycles_ = 0;
 };
 
 
