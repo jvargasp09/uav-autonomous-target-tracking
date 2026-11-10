@@ -99,38 +99,13 @@ private:
     };
 
     void timerCallback()
-    {
-        // Unused fields MUST be NaN: default-initialized zeros would be interpreted
-        // as real setpoints/feedforward (e.g. a position of (0, 0, 0) on the ground).
-        const auto nan = std::numeric_limits<float>::quiet_NaN();
+    {        
         // One value is shared by both messages since they belong to the same control cycle.
-        const uint64_t timestamp_us = timestampUs();
-
-        auto mode_msg = OffboardControlMode();
-        auto trajectory_msg = TrajectorySetpoint();
-
-        mode_msg.timestamp = timestamp_us;
-        mode_msg.position = true;
-        mode_msg.velocity = false;
-        mode_msg.acceleration = false;
-        mode_msg.attitude = false;
-        mode_msg.body_rate = false;
-        mode_msg.thrust_and_torque = false;
-        mode_msg.direct_actuator = false;
-
-        offboard_control_mode_publisher_->publish(mode_msg);
-
-        trajectory_msg.timestamp = timestamp_us;
+        const uint64_t timestamp_us = timestampUs();    
+        
+        publishHeartbeat(timestamp_us);
         // NED frame: z points down, so -2.0 m means 2 m above the origin.
-        trajectory_msg.position = {0.0f, 0.0f, -2.0f};
-        trajectory_msg.velocity = {nan, nan, nan};
-        trajectory_msg.acceleration = {nan, nan, nan};
-        trajectory_msg.jerk = {nan, nan, nan};
-        // NaN yaw: PX4 keeps the current heading instead of turning to a fixed one.
-        trajectory_msg.yaw = nan;
-        trajectory_msg.yawspeed = nan;
-
-        trajectory_setpoint_publisher_->publish(trajectory_msg);
+        publishPositionSetpoint(timestamp_us, 0.0f, 0.0f, -2.0f);
         
         // PX4 only accepts the switch to offboard if setpoints are already streaming,
         // so wait ~1 s of setpoints before sending the mode and arm commands.
@@ -154,6 +129,43 @@ private:
                 setpoint_cycles_++;
             }
         }
+    }
+
+    void publishHeartbeat(const uint64_t timestamp_us)
+    {
+        auto mode_msg = OffboardControlMode();        
+
+        mode_msg.timestamp = timestamp_us;
+        mode_msg.position = true;
+        mode_msg.velocity = false;
+        mode_msg.acceleration = false;
+        mode_msg.attitude = false;
+        mode_msg.body_rate = false;
+        mode_msg.thrust_and_torque = false;
+        mode_msg.direct_actuator = false;
+
+        offboard_control_mode_publisher_->publish(mode_msg);
+    }
+
+    void publishPositionSetpoint(const uint64_t timestamp_us, float x, float y, float z)
+    {
+        // Unused fields MUST be NaN: default-initialized zeros would be interpreted
+        // as real setpoints/feedforward (e.g. a position of (0, 0, 0) on the ground).
+        const auto nan = std::numeric_limits<float>::quiet_NaN();
+
+        auto trajectory_msg = TrajectorySetpoint();
+
+        trajectory_msg.timestamp = timestamp_us;
+        // Position in the NED frame (z points down).
+        trajectory_msg.position = {x, y, z};
+        trajectory_msg.velocity = {nan, nan, nan};
+        trajectory_msg.acceleration = {nan, nan, nan};
+        trajectory_msg.jerk = {nan, nan, nan};
+        // NaN yaw: PX4 keeps the current heading instead of turning to a fixed one.
+        trajectory_msg.yaw = nan;
+        trajectory_msg.yawspeed = nan;
+
+        trajectory_setpoint_publisher_->publish(trajectory_msg);
     }
 
     void publishVehicleCommand(uint32_t command, float param1, float param2=0.0f)
