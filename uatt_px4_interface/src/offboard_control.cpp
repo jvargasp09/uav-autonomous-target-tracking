@@ -213,13 +213,17 @@ private:
                 break;
         }
 
-        // Stream the heartbeat and the current target every cycle.
-        publishHeartbeat(timestamp_us);
-
-        if (hasValidPosition())
+        if (isCommandingVehicle())
         {
-            publishPositionSetpoint(timestamp_us, target_);
-        }
+            // Stream the heartbeat and the current target only while this node is in control.
+            // In Landing, Done and Aborted PX4 has control, so the stream stops.
+            publishHeartbeat(timestamp_us);
+
+            if (hasValidPosition())
+            {
+                publishPositionSetpoint(timestamp_us, target_);
+            }
+        }        
 
         // Don’t count the cycle in which a transition happened, so the new
         // state starts at 0 and on-entry actions run on its first cycle.
@@ -316,6 +320,26 @@ private:
         return vehicle_local_position_msg_.has_value() &&
                vehicle_local_position_msg_->xy_valid &&
                vehicle_local_position_msg_->z_valid;
+    }
+
+    bool isCommandingVehicle() const
+    {
+        switch (state_)
+        {
+            case MissionState::WaitingForSetpoints:
+            case MissionState::RequestingOffboard:
+            case MissionState::Arming:
+            case MissionState::TakingOff:
+            case MissionState::FollowingWaypoints:
+                return true;
+
+            case MissionState::Landing:
+            case MissionState::Done:
+            case MissionState::Aborted:
+                return false;
+        }
+
+        return false;
     }
 
     rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_subscription_;
