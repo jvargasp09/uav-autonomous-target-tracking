@@ -26,6 +26,7 @@
 #include <limits>
 #include <optional>
 #include <array>
+#include <cmath>
 
 using px4_msgs::msg::OffboardControlMode;
 using px4_msgs::msg::TrajectorySetpoint;
@@ -48,6 +49,9 @@ namespace
     // Hardcoded for a single simulated vehicle; to be replaced by a ROS 2 parameter.
     constexpr uint8_t kVehicleSystemId = 1;
     constexpr uint8_t kAutopilotComponentId = 1;
+
+    // Vertical distance to the takeoff target at which the climb is considered done.
+    constexpr float kAltitudeToleranceM = 0.2f;
 
     enum class MissionState
     {
@@ -189,6 +193,18 @@ private:
                 break;
 
             case MissionState::TakingOff:
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD)
+                {
+                    transitionTo(MissionState::Aborted);
+                }
+                else if (hasValidPosition() &&
+                         std::abs(vehicle_local_position_msg_->z - target_[2]) < kAltitudeToleranceM)
+                {
+                    transitionTo(MissionState::FollowingWaypoints);
+                }
+                break;
+
             case MissionState::FollowingWaypoints:
             case MissionState::Landing:
             case MissionState::Done:
