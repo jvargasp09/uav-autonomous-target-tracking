@@ -1,8 +1,8 @@
 /**
  * @file offboard_control.cpp
  * @author Jorge Vargas
- * @brief Switches PX4 to offboard mode, arms the vehicle and holds a fixed
- *        position setpoint (2 m above the origin) at 10 Hz.
+ * @brief Runs an offboard mission state machine: requests offboard mode, 
+ *        arms, and takes off vertically to 2 m above the start position.
  * @date Nov 8, 2026
  *
  * --------------------------------------------------------
@@ -25,6 +25,7 @@
 
 #include <limits>
 #include <optional>
+#include <array>
 
 using px4_msgs::msg::OffboardControlMode;
 using px4_msgs::msg::TrajectorySetpoint;
@@ -136,11 +137,8 @@ private:
     {        
         // One value is shared by both messages since they belong to the same control cycle.
         const uint64_t timestamp_us = timestampUs();    
-        
-        // Temporary: fixed setpoint for every state until takeoff/waypoints are implemented.
-        publishHeartbeat(timestamp_us);
-        // NED frame: z points down, so -2.0 m means 2 m above the origin.
-        publishPositionSetpoint(timestamp_us, 0.0f, 0.0f, -2.0f);
+
+        const MissionState state_before = state_;      
 
         switch (state_)
         {
@@ -150,7 +148,14 @@ private:
                     start_x_ = vehicle_local_position_msg_->x;
                     start_y_ = vehicle_local_position_msg_->y;
                     start_z_ = vehicle_local_position_msg_->z;
+                    target_ = {start_x_, start_y_, start_z_};
                     transitionTo(MissionState::RequestingOffboard);
+                }
+                else if (hasValidPosition())
+                {
+                    target_ = {vehicle_local_position_msg_->x,
+                               vehicle_local_position_msg_->y,
+                               vehicle_local_position_msg_->z};
                 }
                 break;
 
@@ -177,6 +182,8 @@ private:
                 if (vehicle_status_msg_.has_value() &&
                     vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_ARMED)
                 {
+                    // NED frame: z points down, so -2.0 m means 2 m above the start position.
+                    target_ = {start_x_, start_y_, start_z_ - 2.0f};
                     transitionTo(MissionState::TakingOff);
                 }
                 break;
@@ -190,7 +197,20 @@ private:
                 break;
         }
 
-        state_cycles_++;
+        // Stream the heartbeat and the current target every cycle.
+        publishHeartbeat(timestamp_us);
+
+        if (hasValidPosition())
+        {
+            publishPositionSetpoint(timestamp_us, target_);
+        }
+
+        // Don’t count the cycle in which a transition happened, so the new
+        // state starts at 0 and on-entry actions run on its first cycle.
+        if (state_ == state_before)
+        {
+            state_cycles_++;
+        }
     }
 
     void publishHeartbeat(const uint64_t timestamp_us)
@@ -209,7 +229,7 @@ private:
         offboard_control_mode_publisher_->publish(mode_msg);
     }
 
-    void publishPositionSetpoint(const uint64_t timestamp_us, float x, float y, float z)
+    void publishPositionSetpoint(const uint64_t timestamp_us, const std::array<float, 3> & position)
     {
         // Unused fields MUST be NaN: default-initialized zeros would be interpreted
         // as real setpoints/feedforward (e.g. a position of (0, 0, 0) on the ground).
@@ -219,7 +239,7 @@ private:
 
         trajectory_msg.timestamp = timestamp_us;
         // Position in the NED frame (z points down).
-        trajectory_msg.position = {x, y, z};
+        trajectory_msg.position = position;
         trajectory_msg.velocity = {nan, nan, nan};
         trajectory_msg.acceleration = {nan, nan, nan};
         trajectory_msg.jerk = {nan, nan, nan};
@@ -245,6 +265,10 @@ private:
         vehicle_cmd_msg.from_external = true;
 
         vehicle_command_publisher_->publish(vehicle_cmd_msg);
+
+        RCLCPP_DEBUG(get_logger(), 
+                     "Sent vehicle command %u (param1=%.1f, param2=%.1f)", 
+                     command, param1, param2);
     }
 
     void transitionTo(MissionState next)
@@ -268,7 +292,12 @@ private:
         return state_cycles_ >= 10 &&
                vehicle_status_msg_.has_value() &&
                vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_DISARMED &&
-               vehicle_local_position_msg_.has_value() && 
+               hasValidPosition();
+    }
+
+    bool hasValidPosition() const
+    {
+        return vehicle_local_position_msg_.has_value() &&
                vehicle_local_position_msg_->xy_valid &&
                vehicle_local_position_msg_->z_valid;
     }
@@ -291,6 +320,8 @@ private:
     float start_x_ = 0.0f;
     float start_y_ = 0.0f;
     float start_z_ = 0.0f;
+
+    std::array<float, 3> target_{};
 };
 
 
