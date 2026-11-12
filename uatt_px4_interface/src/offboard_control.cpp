@@ -2,8 +2,8 @@
  * @file offboard_control.cpp
  * @author Jorge Vargas
  * @brief Runs an offboard mission state machine: requests offboard mode, arms,
- *        takes off to 2 m above the start position and flies a 5 m square in
- *        the north-east plane, returning above the start position.
+ *        takes off to 2 m above the start position, flies a 5 m square in the
+ *        north-east plane and lands back at the start position.
  * @date Nov 8, 2026
  *
  * --------------------------------------------------------
@@ -70,7 +70,8 @@ namespace
         Arming,                // Send ARM until PX4 confirms ARMED
         TakingOff,             // Climb to the takeoff altitude above the start position
         FollowingWaypoints,    // Fly through the square waypoints
-        Landing,               // NAV_LAND sent; wait for PX4 to land and disarm
+        RequestingLanding,     // Send VEHICLE_CMD_NAV_LAND until PX4 confirms AUTO_LAND
+        Landing,               // PX4 is landing; wait for it to touch down and disarm
         Done,                  // Mission completed; node idle
         Aborted                // PX4 left OFFBOARD; stop commanding, PX4 has control
     };
@@ -89,6 +90,8 @@ namespace
                 return "TakingOff";
             case MissionState::FollowingWaypoints:
                 return "FollowingWaypoints";
+            case MissionState::RequestingLanding:
+                return "RequestingLanding";
             case MissionState::Landing:
                 return "Landing";
             case MissionState::Done:
@@ -258,7 +261,7 @@ private:
 
                         if (waypoint_index_ == waypoints_.size())
                         {
-                            transitionTo(MissionState::Landing);
+                            transitionTo(MissionState::RequestingLanding);
                         }
                         else
                         {                            
@@ -267,11 +270,30 @@ private:
                     }                  
                 }
                 break;
+
+            case MissionState::RequestingLanding:
+                if (state_cycles_ % 10 == 0)
+                {                    
+                    publishVehicleCommand(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+                }
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->nav_state == VehicleStatus::NAVIGATION_STATE_AUTO_LAND)
+                {
+                    transitionTo(MissionState::Landing);
+                }
+                break;
                 
             case MissionState::Landing:
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_DISARMED)
+                {
+                    transitionTo(MissionState::Done);
+                }
+                break;
+
             case MissionState::Done:
             case MissionState::Aborted:
-                // Not implemented yet.
+                // Terminal states: PX4 has control, nothing left to do.
                 break;
         }
 
@@ -332,7 +354,7 @@ private:
         trajectory_setpoint_publisher_->publish(trajectory_msg);
     }
 
-    void publishVehicleCommand(uint32_t command, float param1, float param2=0.0f)
+    void publishVehicleCommand(uint32_t command, float param1=0.0f, float param2=0.0f)
     {        
         auto vehicle_cmd_msg = VehicleCommand();
 
@@ -393,6 +415,7 @@ private:
             case MissionState::Arming:
             case MissionState::TakingOff:
             case MissionState::FollowingWaypoints:
+            case MissionState::RequestingLanding:
                 return true;
 
             case MissionState::Landing:
