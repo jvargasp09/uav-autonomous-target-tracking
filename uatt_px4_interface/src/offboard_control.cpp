@@ -1,8 +1,9 @@
 /**
  * @file offboard_control.cpp
  * @author Jorge Vargas
- * @brief Runs an offboard mission state machine: requests offboard mode, 
- *        arms, and takes off vertically to 2 m above the start position.
+ * @brief Runs an offboard mission state machine: requests offboard mode, arms,
+ *        takes off to 2 m above the start position and flies a 5 m square in
+ *        the north-east plane, returning above the start position.
  * @date Nov 8, 2026
  *
  * --------------------------------------------------------
@@ -52,6 +53,15 @@ namespace
 
     // Vertical distance to the takeoff target at which the climb is considered done.
     constexpr float kAltitudeToleranceM = 0.2f;
+
+    // Flight altitude above the start position for takeoff and waypoints.
+    constexpr float kTakeoffAltitudeM = 2.0f;
+
+    // Side length of the square flown in the north-east plane.
+    constexpr float kSquareSideM = 5.0f;
+
+    // 3D distance to the current waypoint at which it is considered reached.
+    constexpr float kWaypointToleranceM = 0.3f;
 
     enum class MissionState
     {
@@ -152,6 +162,23 @@ private:
                     start_x_ = vehicle_local_position_msg_->x;
                     start_y_ = vehicle_local_position_msg_->y;
                     start_z_ = vehicle_local_position_msg_->z;
+                    
+                    // Computed once from the start position, so the square is anchored where
+                    // the vehicle took off. NED frame: +x north, +y east, z down.
+                    // Square: north, north-east, east, back to start.
+                    waypoints_[0] = {start_x_ + kSquareSideM, 
+                                     start_y_, 
+                                     start_z_ - kTakeoffAltitudeM};
+                    waypoints_[1] = {start_x_ + kSquareSideM, 
+                                     start_y_ + kSquareSideM, 
+                                     start_z_ - kTakeoffAltitudeM};
+                    waypoints_[2] = {start_x_, 
+                                     start_y_ + kSquareSideM, 
+                                     start_z_ - kTakeoffAltitudeM};
+                    waypoints_[3] = {start_x_, 
+                                     start_y_, 
+                                     start_z_ - kTakeoffAltitudeM};
+
                     target_ = {start_x_, start_y_, start_z_};
                     transitionTo(MissionState::RequestingOffboard);
                 }
@@ -186,8 +213,9 @@ private:
                 if (vehicle_status_msg_.has_value() &&
                     vehicle_status_msg_->arming_state == VehicleStatus::ARMING_STATE_ARMED)
                 {
-                    // NED frame: z points down, so -2.0 m means 2 m above the start position.
-                    target_ = {start_x_, start_y_, start_z_ - 2.0f};
+                    // NED frame: z points down, so subtracting the altitude places the
+                    // target above the start position.
+                    target_ = {start_x_, start_y_, start_z_ - kTakeoffAltitudeM};
                     transitionTo(MissionState::TakingOff);
                 }
                 break;
@@ -201,11 +229,45 @@ private:
                 else if (hasValidPosition() &&
                          std::abs(vehicle_local_position_msg_->z - target_[2]) < kAltitudeToleranceM)
                 {
+                    // On entry to FollowingWaypoints: start from the first corner of the square.
+                    waypoint_index_ = 0;                    
+                    target_ = waypoints_[waypoint_index_];
                     transitionTo(MissionState::FollowingWaypoints);
                 }
                 break;
 
             case MissionState::FollowingWaypoints:
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD)
+                {
+                    transitionTo(MissionState::Aborted);
+                }
+                else if (hasValidPosition())
+                {
+                    const float distance_m = std::hypot(vehicle_local_position_msg_->x - target_[0],
+                                                        vehicle_local_position_msg_->y - target_[1],
+                                                        vehicle_local_position_msg_->z - target_[2]);
+
+                    // Advance to the next waypoint once within tolerance; land after the last one.
+                    if (distance_m < kWaypointToleranceM)
+                    {           
+                        RCLCPP_INFO(get_logger(), "Reached waypoint %zu/%zu", 
+                                    waypoint_index_ + 1, waypoints_.size());
+
+                        waypoint_index_++;
+
+                        if (waypoint_index_ == waypoints_.size())
+                        {
+                            transitionTo(MissionState::Landing);
+                        }
+                        else
+                        {                            
+                            target_ = waypoints_[waypoint_index_];
+                        }                    
+                    }                  
+                }
+                break;
+                
             case MissionState::Landing:
             case MissionState::Done:
             case MissionState::Aborted:
@@ -362,6 +424,8 @@ private:
     float start_z_ = 0.0f;
 
     std::array<float, 3> target_{};
+    std::array<std::array<float, 3>, 4> waypoints_{};
+    std::size_t waypoint_index_ = 0;
 };
 
 
