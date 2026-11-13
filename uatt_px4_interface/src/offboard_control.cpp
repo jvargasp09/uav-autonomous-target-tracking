@@ -3,7 +3,8 @@
  * @author Jorge Vargas
  * @brief Runs an offboard mission state machine: requests offboard mode, arms,
  *        takes off to 2 m above the start position, flies a 5 m square in the
- *        north-east plane and lands back at the start position.
+ *        north-east plane at a constant cruise speed and lands back at the
+ *        start position.
  * @date Nov 8, 2026
  *
  * --------------------------------------------------------
@@ -28,6 +29,7 @@
 #include <optional>
 #include <array>
 #include <cmath>
+#include <chrono>
 
 using px4_msgs::msg::OffboardControlMode;
 using px4_msgs::msg::TrajectorySetpoint;
@@ -53,15 +55,20 @@ namespace
 
     // Vertical distance to the takeoff target at which the climb is considered done.
     constexpr float kAltitudeToleranceM = 0.2f;
-
     // Flight altitude above the start position for takeoff and waypoints.
     constexpr float kTakeoffAltitudeM = 2.0f;
-
     // Side length of the square flown in the north-east plane.
     constexpr float kSquareSideM = 5.0f;
-
     // 3D distance to the current waypoint at which it is considered reached.
     constexpr float kWaypointToleranceM = 0.3f;
+    // Speed at which the setpoint moves along each segment.
+    constexpr float kCruiseSpeedMps = 1.0f;
+    // Control loop period. PX4 requires the offboard stream at > 2 Hz.
+    constexpr std::chrono::milliseconds kControlPeriod{100};
+    // Setpoint advance per control cycle at cruise speed.
+    constexpr float kStepDistance = kCruiseSpeedMps * std::chrono::duration<float>(kControlPeriod).count();
+    // Segments shorter than this have no defined direction.
+    constexpr float kMinSegmentLengthM = 1e-6f;   
 
     enum class MissionState
     {
@@ -131,7 +138,7 @@ public:
         
         // PX4 requires the offboard stream at > 2 Hz and exits offboard after
         // COM_OF_LOSS_T (1 s by default) without it. 10 Hz leaves a safe margin.
-        timer_ = create_wall_timer(100ms,
+        timer_ = create_wall_timer(kControlPeriod,
             std::bind(&OffboardControl::timerCallback, this)
         );
 
@@ -232,9 +239,9 @@ private:
                 else if (hasValidPosition() &&
                          std::abs(vehicle_local_position_msg_->z - target_[2]) < kAltitudeToleranceM)
                 {
-                    // On entry to FollowingWaypoints: start from the first corner of the square.
-                    waypoint_index_ = 0;                    
-                    target_ = waypoints_[waypoint_index_];
+                    // On entry: the first segment starts at the takeoff point and heads to the first corner.
+                    waypoint_index_ = 0;  
+                    updateSegmentStep();
                     transitionTo(MissionState::FollowingWaypoints);
                 }
                 break;
@@ -247,27 +254,43 @@ private:
                 }
                 else if (hasValidPosition())
                 {
-                    const float distance_m = std::hypot(vehicle_local_position_msg_->x - target_[0],
-                                                        vehicle_local_position_msg_->y - target_[1],
-                                                        vehicle_local_position_msg_->z - target_[2]);
+                    const float distance_to_waypoint = std::hypot(vehicle_local_position_msg_->x - waypoints_[waypoint_index_][0],
+                                                                  vehicle_local_position_msg_->y - waypoints_[waypoint_index_][1],
+                                                                  vehicle_local_position_msg_->z - waypoints_[waypoint_index_][2]);
 
-                    // Advance to the next waypoint once within tolerance; land after the last one.
-                    if (distance_m < kWaypointToleranceM)
-                    {           
-                        RCLCPP_INFO(get_logger(), "Reached waypoint %zu/%zu", 
-                                    waypoint_index_ + 1, waypoints_.size());
+                    const float setpoint_to_waypoint = std::hypot(target_[0] - waypoints_[waypoint_index_][0],
+                                                                  target_[1] - waypoints_[waypoint_index_][1],
+                                                                  target_[2] - waypoints_[waypoint_index_][2]);                    
 
-                        waypoint_index_++;
+                    if (setpoint_to_waypoint <= kStepDistance)
+                    {
+                        // Clamp the setpoint to the corner once it is less than one step away.              
+                        target_ = waypoints_[waypoint_index_];
 
-                        if (waypoint_index_ == waypoints_.size())
-                        {
-                            transitionTo(MissionState::RequestingLanding);
+                        // Advance to the next waypoint once within tolerance; land after the last one.
+                        if (distance_to_waypoint < kWaypointToleranceM)
+                        {           
+                            RCLCPP_INFO(get_logger(), "Reached waypoint %zu/%zu", 
+                                        waypoint_index_ + 1, waypoints_.size());
+
+                            waypoint_index_++;
+
+                            if (waypoint_index_ == waypoints_.size())
+                            {
+                                transitionTo(MissionState::RequestingLanding);
+                            }
+                            else
+                            {           
+                                updateSegmentStep();                                
+                            }                    
                         }
-                        else
-                        {                            
-                            target_ = waypoints_[waypoint_index_];
-                        }                    
-                    }                  
+                    }
+                    else
+                    {
+                        target_ = {target_[0] + segment_step_[0],
+                                   target_[1] + segment_step_[1],
+                                   target_[2] + segment_step_[2]};  
+                    }   
                 }
                 break;
 
@@ -375,6 +398,27 @@ private:
                      command, param1, param2);
     }
 
+    // Must be called whenever waypoint_index_ changes, with target_ at the start of the new segment.
+    void updateSegmentStep()
+    {
+        const std::array<float, 3> to_waypoint = {waypoints_[waypoint_index_][0] - target_[0],
+                                                  waypoints_[waypoint_index_][1] - target_[1],
+                                                  waypoints_[waypoint_index_][2] - target_[2]};
+                                              
+        const float magnitude = std::hypot(to_waypoint[0], to_waypoint[1], to_waypoint[2]);
+
+        if (magnitude <= kMinSegmentLengthM)
+        {
+            segment_step_ = {0.0f, 0.0f, 0.0f};
+            return;
+        }
+
+        const float scale = kStepDistance / magnitude;
+        segment_step_ = {to_waypoint[0] * scale,
+                         to_waypoint[1] * scale,
+                         to_waypoint[2] * scale};
+    }
+
     void transitionTo(MissionState next)
     {
         RCLCPP_INFO(get_logger(),
@@ -449,6 +493,8 @@ private:
     std::array<float, 3> target_{};
     std::array<std::array<float, 3>, 4> waypoints_{};
     std::size_t waypoint_index_ = 0;
+
+    std::array<float, 3> segment_step_ = {0.0f, 0.0f, 0.0f};
 };
 
 
