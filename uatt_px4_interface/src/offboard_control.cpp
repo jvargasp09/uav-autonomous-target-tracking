@@ -65,8 +65,16 @@ namespace
     constexpr float kCruiseSpeedMps = 1.0f;
     // Control loop period. PX4 requires the offboard stream at > 2 Hz.
     constexpr std::chrono::milliseconds kControlPeriod{100};
+    // Control loop period in seconds, for kinematic calculations.
+    constexpr float kControlPeriodS = std::chrono::duration<float>(kControlPeriod).count();
     // Setpoint advance per control cycle at cruise speed.
-    constexpr float kStepDistance = kCruiseSpeedMps * std::chrono::duration<float>(kControlPeriod).count();
+    constexpr float kStepDistance = kCruiseSpeedMps * kControlPeriodS;
+    // NaN velocity: PX4 applies no feedforward and relies on the position loop only.
+    constexpr std::array<float, 3> kNoVelocityFeedforward = {
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::quiet_NaN()};
+
     // Segments shorter than this have no defined direction.
     constexpr float kMinSegmentLengthM = 1e-6f;   
 
@@ -162,7 +170,10 @@ private:
         // One value is shared by both messages since they belong to the same control cycle.
         const uint64_t timestamp_us = timestampUs();    
 
-        const MissionState state_before = state_;      
+        const MissionState state_before = state_;  
+
+        // Feedforward is only used while the setpoint moves along a segment; NaN otherwise.
+        velocity_ff_ = kNoVelocityFeedforward;    
 
         switch (state_)
         {
@@ -267,6 +278,9 @@ private:
                         // Clamp the setpoint to the corner once it is less than one step away.              
                         target_ = waypoints_[waypoint_index_];
 
+                        // The setpoint is parked at the corner: no feedforward velocity.
+                        velocity_ff_ = {0.0f, 0.0f, 0.0f};
+
                         // Advance to the next waypoint once within tolerance; land after the last one.
                         if (distance_to_waypoint < kWaypointToleranceM)
                         {           
@@ -290,6 +304,12 @@ private:
                         target_ = {target_[0] + segment_step_[0],
                                    target_[1] + segment_step_[1],
                                    target_[2] + segment_step_[2]};  
+
+                        // Feed the setpoint's own velocity forward, so PX4 does not need
+                        // a position error to keep up with it.
+                        velocity_ff_ = {segment_step_[0] / kControlPeriodS,
+                                        segment_step_[1] / kControlPeriodS,
+                                        segment_step_[2] / kControlPeriodS};
                     }   
                 }
                 break;
@@ -328,7 +348,7 @@ private:
 
             if (hasValidPosition())
             {
-                publishPositionSetpoint(timestamp_us, target_);
+                publishPositionSetpoint(timestamp_us, target_, velocity_ff_);
             }
         }        
 
@@ -356,7 +376,9 @@ private:
         offboard_control_mode_publisher_->publish(mode_msg);
     }
 
-    void publishPositionSetpoint(const uint64_t timestamp_us, const std::array<float, 3> & position)
+    void publishPositionSetpoint(const uint64_t timestamp_us, 
+                                 const std::array<float, 3> & position,
+                                 const std::array<float, 3> & velocity_ff)
     {
         // Unused fields MUST be NaN: default-initialized zeros would be interpreted
         // as real setpoints/feedforward (e.g. a position of (0, 0, 0) on the ground).
@@ -367,7 +389,8 @@ private:
         trajectory_msg.timestamp = timestamp_us;
         // Position in the NED frame (z points down).
         trajectory_msg.position = position;
-        trajectory_msg.velocity = {nan, nan, nan};
+        // Velocity feedforward in the NED frame; NaN means none.
+        trajectory_msg.velocity = velocity_ff;
         trajectory_msg.acceleration = {nan, nan, nan};
         trajectory_msg.jerk = {nan, nan, nan};
         // NaN yaw: PX4 keeps the current heading instead of turning to a fixed one.
@@ -495,6 +518,7 @@ private:
     std::size_t waypoint_index_ = 0;
 
     std::array<float, 3> segment_step_ = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> velocity_ff_ = kNoVelocityFeedforward;
 };
 
 
