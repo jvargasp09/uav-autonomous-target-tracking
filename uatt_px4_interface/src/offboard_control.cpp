@@ -75,6 +75,17 @@ namespace
         std::numeric_limits<float>::quiet_NaN(),
         std::numeric_limits<float>::quiet_NaN()};
 
+    // Max distance to the final corner for the vehicle to be considered in place before landing.
+    constexpr float kStabilizePositionToleranceM = 0.1f;
+    // Max speed for the vehicle to be considered still before landing.
+    constexpr float kStabilizeSpeedToleranceMps = 0.05f;
+    // Time the vehicle must stay in place and still before landing is requested.
+    constexpr float kStabilizeTimeS = 1.0f;
+    constexpr int kStabilizeCycles = static_cast<int>(kStabilizeTimeS / kControlPeriodS);
+    // Max time to wait for the vehicle to settle before landing anyway.
+    constexpr float kStabilizeTimeoutS = 5.0f;
+    constexpr int kStabilizeTimeoutCycles = static_cast<int>(kStabilizeTimeoutS / kControlPeriodS);
+
     // Segments shorter than this have no defined direction.
     constexpr float kMinSegmentLengthM = 1e-6f;   
 
@@ -85,6 +96,7 @@ namespace
         Arming,                // Send ARM until PX4 confirms ARMED
         TakingOff,             // Climb to the takeoff altitude above the start position
         FollowingWaypoints,    // Fly through the square waypoints
+        Stabilizing,           // Hold the last corner until the vehicle is still, then land
         RequestingLanding,     // Send VEHICLE_CMD_NAV_LAND until PX4 confirms AUTO_LAND
         Landing,               // PX4 is landing; wait for it to touch down and disarm
         Done,                  // Mission completed; node idle
@@ -105,6 +117,8 @@ namespace
                 return "TakingOff";
             case MissionState::FollowingWaypoints:
                 return "FollowingWaypoints";
+            case MissionState::Stabilizing:
+                return "Stabilizing";
             case MissionState::RequestingLanding:
                 return "RequestingLanding";
             case MissionState::Landing:
@@ -281,20 +295,20 @@ private:
                         // The setpoint is parked at the corner: no feedforward velocity.
                         velocity_ff_ = {0.0f, 0.0f, 0.0f};
 
-                        // Advance to the next waypoint once within tolerance; land after the last one.
+                        // Advance to the next waypoint once within tolerance; stabilize after the last one.
                         if (distance_to_waypoint < kWaypointToleranceM)
                         {           
                             RCLCPP_INFO(get_logger(), "Reached waypoint %zu/%zu", 
-                                        waypoint_index_ + 1, waypoints_.size());
+                                        waypoint_index_ + 1, waypoints_.size());                            
 
-                            waypoint_index_++;
-
-                            if (waypoint_index_ == waypoints_.size())
+                            if (waypoint_index_ == waypoints_.size() - 1)
                             {
-                                transitionTo(MissionState::RequestingLanding);
+                                stable_cycles_ = 0;
+                                transitionTo(MissionState::Stabilizing);
                             }
                             else
-                            {           
+                            {        
+                                waypoint_index_++;   
                                 updateSegmentStep();                                
                             }                    
                         }
@@ -311,6 +325,49 @@ private:
                                         segment_step_[1] / kControlPeriodS,
                                         segment_step_[2] / kControlPeriodS};
                     }   
+                }
+                break;
+
+            case MissionState::Stabilizing:
+                if (vehicle_status_msg_.has_value() &&
+                    vehicle_status_msg_->nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD)
+                {
+                    transitionTo(MissionState::Aborted);
+                }
+                else if (hasValidPosition())
+                {          
+                    velocity_ff_ = {0.0f, 0.0f, 0.0f};
+
+                    const float distance_to_waypoint = std::hypot(vehicle_local_position_msg_->x - waypoints_[waypoint_index_][0],
+                                                                vehicle_local_position_msg_->y - waypoints_[waypoint_index_][1],
+                                                                vehicle_local_position_msg_->z - waypoints_[waypoint_index_][2]);
+                
+                    const float current_speed = std::hypot(vehicle_local_position_msg_->vx,
+                                                        vehicle_local_position_msg_->vy,
+                                                        vehicle_local_position_msg_->vz);                                   
+
+                    if (distance_to_waypoint < kStabilizePositionToleranceM &&
+                        current_speed < kStabilizeSpeedToleranceMps)
+                    {
+                        stable_cycles_++;
+                    }       
+                    else
+                    {
+                        stable_cycles_ = 0;
+                    }     
+                    
+                    if (stable_cycles_ >= kStabilizeCycles)
+                    {                        
+                        transitionTo(MissionState::RequestingLanding);
+                    }
+                    else if (state_cycles_ >= kStabilizeTimeoutCycles)
+                    {
+                        RCLCPP_WARN(get_logger(), 
+                                    "Vehicle did not settle within %.1f s; landing anyway.",
+                                    kStabilizeTimeoutS);
+
+                        transitionTo(MissionState::RequestingLanding);
+                    }
                 }
                 break;
 
@@ -482,6 +539,7 @@ private:
             case MissionState::Arming:
             case MissionState::TakingOff:
             case MissionState::FollowingWaypoints:
+            case MissionState::Stabilizing:
             case MissionState::RequestingLanding:
                 return true;
 
@@ -508,6 +566,7 @@ private:
     std::optional<VehicleLocalPosition> vehicle_local_position_msg_;
 
     int state_cycles_ = 0;
+    int stable_cycles_ = 0;
 
     float start_x_ = 0.0f;
     float start_y_ = 0.0f;
