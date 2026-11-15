@@ -83,7 +83,7 @@ namespace
     constexpr float kStabilizeTimeS = 1.0f;
     constexpr int kStabilizeCycles = static_cast<int>(kStabilizeTimeS / kControlPeriodS);
     // Max time to wait for the vehicle to settle before landing anyway.
-    constexpr float kStabilizeTimeoutS = 5.0f;
+    constexpr float kStabilizeTimeoutS = 10.0f;
     constexpr int kStabilizeTimeoutCycles = static_cast<int>(kStabilizeTimeoutS / kControlPeriodS);
 
     // Segments shorter than this have no defined direction.
