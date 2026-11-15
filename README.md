@@ -2,7 +2,7 @@
 
 Autonomous UAV target tracking with obstacle avoidance and visual-inertial localization, built with ROS 2, PX4 and Gazebo.
 
-> 🚧 Work in progress — currently in Phase 1 (PX4 ↔ ROS 2 integration and offboard control).
+> 🚧 Work in progress — v0.1 (offboard control) complete; now working on v0.2 (target detection and tracking).
 
 ## Goal
 
@@ -10,7 +10,7 @@ A simulated quadrotor that detects and follows a moving target in an unknown env
 
 ## Roadmap
 
-- [ ] **v0.1** — PX4 + ROS 2 integration, offboard control
+- [x] **v0.1** — PX4 + ROS 2 integration, offboard control
 - [ ] **v0.2** — Target detection and tracking
 - [ ] **v0.3** — Local planning and obstacle avoidance
 - [ ] **v0.4** — Visual-inertial localization (replacing ground truth)
