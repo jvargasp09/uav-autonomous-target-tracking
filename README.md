@@ -16,6 +16,16 @@ A simulated quadrotor that detects and follows a moving target in an unknown env
 - [ ] **v0.4** — Visual-inertial localization (replacing ground truth)
 - [ ] **v1.0** — Full integration and evaluation
 
+## Current Status: Offboard Mission (v0.1)
+ 
+![Offboard mission: takeoff, 5 m square and landing (2x speed)](docs/media/offboard_mission.gif)
+ 
+The drone takes off, flies a 5 m square at a constant cruise speed and lands back at the
+start position, fully commanded from ROS 2 through PX4 offboard mode.
+
+See [`uatt_px4_interface`](uatt_px4_interface/README.md) for the mission state machine,
+the design decisions and how to run it.
+
 ## Stack
 
 | Component | Version |
