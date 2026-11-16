@@ -158,9 +158,11 @@ public:
         trajectory_setpoint_publisher_ = create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", qos);
         vehicle_command_publisher_ = create_publisher<VehicleCommand>("/fmu/in/vehicle_command", qos);        
         
-        // PX4 requires the offboard stream at > 2 Hz and exits offboard after
-        // COM_OF_LOSS_T (1 s by default) without it. 10 Hz leaves a safe margin.
-        timer_ = create_wall_timer(kControlPeriod,
+        // Runs on the node clock, so it follows simulation time when use_sim_time is set
+        // and every cycle-based duration stays consistent with the simulated vehicle.
+        // PX4 requires the offboard stream at > 2 Hz and exits offboard after COM_OF_LOSS_T
+        // without it. 10 Hz leaves a safe margin.
+        timer_ = create_timer(kControlPeriod,
             std::bind(&OffboardControl::timerCallback, this)
         );
 
@@ -511,8 +513,9 @@ private:
 
     uint64_t timestampUs()
     {
-        // PX4 expects timestamps in microseconds.
-        return get_clock()->now().nanoseconds() / 1000;
+        // PX4 expects timestamps in microseconds. The uXRCE-DDS bridge synchronizes with
+        // the system clock, so this deliberately ignores use_sim_time (see system_clock_).
+        return system_clock_.now().nanoseconds() / 1000;
     }
 
     bool isReadyToStart() const
@@ -560,6 +563,9 @@ private:
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;    
 
     rclcpp::TimerBase::SharedPtr timer_;
+    // Always system time, unlike the node clock (get_clock()), which follows /clock
+    // when use_sim_time is set. Used only for PX4 message timestamps.
+    rclcpp::Clock system_clock_{RCL_SYSTEM_TIME};
 
     MissionState state_ = MissionState::WaitingForSetpoints;
     std::optional<VehicleStatus> vehicle_status_msg_;
