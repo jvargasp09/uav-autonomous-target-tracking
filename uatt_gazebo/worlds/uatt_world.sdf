@@ -10,7 +10,7 @@
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type="adiabatic"/>
     <scene>
-      <grid>false</grid>
+      <grid>true</grid>
       <ambient>0.4 0.4 0.4 1</ambient>
       <background>0.7 0.7 0.7 1</background>
       <shadows>true</shadows>
@@ -83,6 +83,59 @@
         <falloff>0</falloff>
       </spot>
     </light>
+    <actor name="actor_walking">
+      <skin>
+          <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+          <scale>1.0</scale>
+      </skin>
+      <animation name="walk">
+          <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+          <interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <loop>true</loop>
+        <delay_start>0</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint>
+              <time>0</time>
+              <pose>5 0 1.0 0 0 1.57</pose>
+          </waypoint>
+          <waypoint>
+              <time>5</time>
+              <pose>5 5 1.0 0 0 1.57</pose>
+          </waypoint>
+          <waypoint>
+              <time>5.5</time>
+              <pose>5 5 1.0 0 0 0</pose>
+          </waypoint>
+          <waypoint>
+              <time>10.5</time>
+              <pose>10 5 1.0 0 0 0</pose>
+          </waypoint>
+          <waypoint>
+              <time>11</time>
+              <pose>10 5 1.0 0 0 -1.57</pose>
+          </waypoint>
+          <waypoint>
+              <time>16</time>
+              <pose>10 0 1.0 0 0 -1.57</pose>
+          </waypoint>
+          <waypoint>
+              <time>16.5</time>
+              <pose>10 0 1.0 0 0 3.14</pose>
+          </waypoint>
+          <waypoint>
+              <time>21.5</time>
+              <pose>5 0 1.0 0 0 3.14</pose>
+          </waypoint>
+          <waypoint>
+              <time>22</time>
+              <pose>5 0 1.0 0 0 1.57</pose>
+          </waypoint>
+        </trajectory>
+      </script>
+    </actor>
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
       <world_frame_orientation>ENU</world_frame_orientation>
