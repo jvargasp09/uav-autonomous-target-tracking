@@ -56,7 +56,7 @@ namespace
     // Vertical distance to the takeoff target at which the climb is considered done.
     constexpr float kAltitudeToleranceM = 0.2f;
     // Flight altitude above the start position for takeoff and waypoints.
-    constexpr float kTakeoffAltitudeM = 2.0f;
+    constexpr float kTakeoffAltitudeM = 5.0f;
     // Side length of the square flown in the north-east plane.
     constexpr float kSquareSideM = 5.0f;
     // 3D distance to the current waypoint at which it is considered reached.
